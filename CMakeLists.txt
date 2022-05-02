@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.2)
 
-project(lab01 C CXX)
+project(lab02 C CXX)
 
 SET (SERVER "server")
 SET (U_TESTS "unittests")
