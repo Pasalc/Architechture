@@ -26,6 +26,8 @@
 #include "Poco/Exception.h"
 #include "Poco/StreamCopier.h"
 #include "Poco/JSON/Object.h"
+#include "Poco/JSON/Parser.h"
+#include "Poco/Dynamic/Var.h"
 #include "Poco/Net/ServerSocket.h"
 #include "Poco/Net/SocketStream.h"
 #include "Poco/Net/HTMLForm.h"
@@ -39,6 +41,9 @@
 #include "Poco/ThreadPool.h"
 #include "Poco/Util/Option.h"
 #include "Poco/Util/HelpFormatter.h"
+#include <ignite/thin/ignite_client.h>
+#include <ignite/thin/ignite_client_configuration.h>
+#include <ignite/thin/cache/cache_peek_mode.h>
 
 using namespace std;
 
@@ -65,16 +70,16 @@ const string HOST="127.0.0.1";
 const string LOGIN="stud";
 const string DATABASE="Age";
 const string PASSWORD="stud";
+const string CACHE_IP_PORT=HOST+":10800,"+HOST+":10900";
 const int PORT=8080;
 const int DOCKER_PORT=PORT+5; 
-const int DATABASE_SHARDS=4;
 
 bool Is_Prefix(const string&, const string&);
 
 Poco::Data::Session *Create_Session(){
     string connection_string="host="+HOST+";user="+LOGIN+";db="+DATABASE+";password="+PASSWORD+";port="+to_string(DOCKER_PORT);
     Poco::Data::MySQL::Connector::registerConnector();
-    Poco::Data::Session *createsession=NULL;
+    Poco::Data::Session *createsession = NULL;
     POCO_CHECKER(createsession=new Poco::Data::Session(Poco::Data::SessionFactory::instance().create(Poco::Data::MySQL::Connector::KEY,connection_string));)
     return createsession;
 }

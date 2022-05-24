@@ -1,5 +1,49 @@
 #include "GlobData.hpp"
 
+class Apache_Cache{
+public:
+    Apache_Cache(){
+        ignite::thin::IgniteClientConfiguration apache_config;
+        apache_config.SetEndPoints(CACHE_IP_PORT);
+        apache_config.SetPartitionAwareness(true);
+        try{
+            apache_client=ignite::thin::IgniteClient::Start(apache_config);
+            apache_cache=apache_client.GetOrCreateCache<string,string>("persons");
+        }
+        catch (ignite::IgniteError* err){
+            cout<<"Cache wasn not created because: "<<err->what()<<"\n";
+            throw;
+        }
+    }
+
+    bool Get(string &form_login, string &cache_json){
+        try{
+            cache_json=apache_cache.Get(form_login);
+            return cache_json!="";
+        }
+        catch(...){
+            cache_json="";
+            return false;
+        }
+    }
+
+    void Put(string &form_login, string &tmp){
+        apache_cache.Put(form_login,tmp);
+    }
+
+    void Delete(string &form_login){
+        apache_cache.Remove(form_login);
+    }
+
+    void Clear_All(){
+        apache_cache.RemoveAll();
+    }
+
+private:
+    ignite::thin::IgniteClient apache_client;
+    ignite::thin::cache::CacheClient<string,string> apache_cache;
+};
+
 class HTML_Receiver : public Poco::Net::HTTPRequestHandler{
 public:
     HTML_Receiver(const string &http_format) : _http_format(http_format){
@@ -35,7 +79,7 @@ private:
 
 class Database_Receiver : public Poco::Net::HTTPRequestHandler{
 public:
-    Database_Receiver(const string &http_format) : _http_format(http_format){
+    Database_Receiver(const string &http_format, Apache_Cache &cache) : _http_format(http_format), _cache(cache){
     }
 
     void handleRequest(Poco::Net::HTTPServerRequest &request, Poco::Net::HTTPServerResponse &response){
@@ -45,26 +89,31 @@ public:
         ostream &ost=response.send();
         string str_request=request.getMethod();
         if(str_request=="GET"&&request_form.has("login")){
-            string form_login=request_form.get("login"); 
+            string form_login=request_form.get("login"), cache_json;
+            if (_cache.Get(form_login, cache_json)){
+                ost<<cache_json;
+                response.setStatus(Poco::Net::HTTPResponse::HTTPStatus::HTTP_OK);
+                return;
+            }
+            cout<<"No cache for "<<form_login<<"\n";
             auto createsession=unique_ptr<Poco::Data::Session>(Create_Session());
             auto &session=*createsession;
             Person human;
             bool found=true;
             POCO_CHECKER(
                 Poco::Data::Statement database_request(session);
-                database_request<<"SELECT login, first_name, last_name, age FROM Person WHERE login=? -- sharding:"<<to_string(hash<string>{}(form_login)%DATABASE_SHARDS),Poco::Data::Keywords::into(human.login),Poco::Data::Keywords::into(human.first_name),Poco::Data::Keywords::into(human.last_name),Poco::Data::Keywords::into(human.age),Poco::Data::Keywords::use(form_login),Poco::Data::Keywords::range(0, 1);
+                database_request<<"SELECT login, first_name, last_name, age FROM Person WHERE login=?",Poco::Data::Keywords::into(human.login),Poco::Data::Keywords::into(human.first_name),Poco::Data::Keywords::into(human.last_name),Poco::Data::Keywords::into(human.age),Poco::Data::Keywords::use(form_login),Poco::Data::Keywords::range(0, 1);
                 database_request.execute();
                 Poco::Data::RecordSet record_set(database_request);
                 if(!record_set.moveFirst()){
                     throw logic_error("not found");
-                } 
+                }
             )
             catch(logic_error &e){
                 cout<<form_login<<" not found\n";
                 found=false;
             }
             try{
-                Poco::JSON::Array result_json;
                 Poco::JSON::Object::Ptr object_json = new Poco::JSON::Object();
                 if(found){
                     object_json->set("login", human.login);
@@ -72,58 +121,49 @@ public:
                     object_json->set("last_name", human.last_name);
                     object_json->set("age", human.age);
                 }
-                result_json.add(object_json);
-                Poco::JSON::Stringifier::stringify(result_json, ost);
+                stringstream result_json;
+                Poco::JSON::Stringifier::stringify(object_json, result_json);
+                string tmp=result_json.str();
+                ost<<tmp; 
+                _cache.Put(form_login, tmp);
             }
-            catch(...){
-                cout<<"exception\n";
+            catch (...){
+                cout << "exception\n";
             }
             response.setStatus(Poco::Net::HTTPResponse::HTTPStatus::HTTP_OK);
         }
         else if(str_request=="GET"&&request_form.has("first_name")&&request_form.has("last_name")){
             string first_name=request_form.get("first_name"),last_name=request_form.get("last_name");
-            auto Parallel=[](int shard_part,string first_name,string last_name,vector<Person> *database_result)->void{
-                auto createsession=unique_ptr<Poco::Data::Session>(Create_Session());
-                Poco::Data::Session &session=*createsession;
-                Person human;
-                POCO_CHECKER(
-                    Poco::Data::Statement database_request(session);
-                    database_request<<"SELECT login, first_name, last_name, age FROM Person WHERE first_name LIKE ? AND last_name LIKE ? -- sharding:"<<to_string(shard_part),Poco::Data::Keywords::into(human.login),Poco::Data::Keywords::into(human.first_name),Poco::Data::Keywords::into(human.last_name),Poco::Data::Keywords::into(human.age),Poco::Data::Keywords::use(first_name),Poco::Data::Keywords::use(last_name),Poco::Data::Keywords::range(0, 1);
-                    while(!database_request.done()){
-                        if(database_request.execute()){
-                            database_result->push_back(human);
-                        }
+            auto createsession=unique_ptr<Poco::Data::Session>(Create_Session());
+            Poco::Data::Session &session=*createsession;
+            Person human;
+            vector<Person> result;
+            POCO_CHECKER(
+                Poco::Data::Statement database_request(session);
+                database_request<<"SELECT login, first_name, last_name, age FROM Person WHERE first_name LIKE ? AND last_name LIKE ?",Poco::Data::Keywords::into(human.login),Poco::Data::Keywords::into(human.first_name),Poco::Data::Keywords::into(human.last_name),Poco::Data::Keywords::into(human.age),Poco::Data::Keywords::use(first_name),Poco::Data::Keywords::use(last_name),Poco::Data::Keywords::range(0, 1);
+                while(!database_request.done()){
+                    if(database_request.execute()){
+                        result.push_back(human);
                     }
-                )
-            };
-            vector<vector<Person>*> result(DATABASE_SHARDS);
-            vector<thread*> threads(DATABASE_SHARDS);
-            for(int i=0;i<DATABASE_SHARDS;i++){
-                result[i] = new vector<Person>(0);
-                threads[i] = new thread(Parallel,i, first_name,last_name,result[i]);
-            }
-            for(int i=0;i<threads.size();i++){
-                threads[i]->join(); 
-                delete threads[i];
-            }
+                }
+            )
             try{
                 Poco::JSON::Array result_json;
-                for(int i=0;i<result.size();i++) 
-                    for(int j=0;j<result[i]->size();j++){
-                        Poco::JSON::Object::Ptr object_json=new Poco::JSON::Object();
-                        object_json->set("login",result[i]->at(j).login);
-                        object_json->set("first_name",result[i]->at(j).first_name);
-                        object_json->set("last_name",result[i]->at(j).last_name);
-                        object_json->set("age",result[i]->at(j).age);
-                        result_json.add(object_json);
-                    }
+                for(int i=0;i<result.size();i++){
+                    Poco::JSON::Object::Ptr object_json=new Poco::JSON::Object();
+                    object_json->set("login",result[i].login);
+                    object_json->set("first_name",result[i].first_name);
+                    object_json->set("last_name",result[i].last_name);
+                    object_json->set("age",result[i].age);
+                    result_json.add(object_json);
+                }
                 Poco::JSON::Stringifier::stringify(result_json,ost);
             }
-            catch(...){
+            catch (...){
                 cout<<"exception\n";
+                response.setStatus(Poco::Net::HTTPResponse::HTTPStatus::HTTP_INTERNAL_SERVER_ERROR);
+                return;
             }
-            for(int i=0;i<result.size();i++)
-                delete result[i];
             response.setStatus(Poco::Net::HTTPResponse::HTTPStatus::HTTP_OK);
         }
         else if(str_request=="POST"&&request_form.has("login")&&request_form.has("last_name")&&request_form.has("first_name")&&request_form.has("age")){
@@ -134,7 +174,7 @@ public:
             bool found=true;
             POCO_CHECKER(
                 Poco::Data::Statement database_request(session);
-                database_request<<"SELECT login FROM Person WHERE login=? -- sharding:"<<to_string(hash<string>{}(login)%DATABASE_SHARDS),Poco::Data::Keywords::use(login),Poco::Data::Keywords::range(0, 1);
+                database_request<<"SELECT login FROM Person WHERE login=?",Poco::Data::Keywords::use(login),Poco::Data::Keywords::range(0, 1);
                 database_request.execute();
                 Poco::Data::RecordSet record_set(database_request);
                 if(record_set.moveFirst()) {
@@ -145,10 +185,19 @@ public:
             if(found){
                 res="OK";
                 POCO_CHECKER(
-                    Poco::Data::Statement INSERT(session);
-                    INSERT<<"INSERT INTO Person (login, first_name, last_name, age)VALUES (?, ?, ?, ?) -- sharding:"<<to_string(hash<string>{}(login)%DATABASE_SHARDS),Poco::Data::Keywords::use(login),Poco::Data::Keywords::use(first_name),Poco::Data::Keywords::use(last_name),Poco::Data::Keywords::use(age),Poco::Data::Keywords::range(0, 1);
-                    INSERT.execute();
+                    Poco::Data::Statement database_request(session);
+                    database_request<<"INSERT INTO Person (login, first_name, last_name, age) VALUES (?, ?, ?, ?)",Poco::Data::Keywords::use(login),Poco::Data::Keywords::use(first_name),Poco::Data::Keywords::use(last_name),Poco::Data::Keywords::use(age),Poco::Data::Keywords::range(0, 1);
+                    database_request.execute();
                 )
+                Poco::JSON::Object::Ptr object_json=new Poco::JSON::Object();
+                object_json->set("login",login);
+                object_json->set("first_name",first_name);
+                object_json->set("last_name",last_name);
+                object_json->set("age",age);
+                stringstream result_json;
+                Poco::JSON::Stringifier::stringify(object_json, result_json);
+                string tmp=result_json.str();
+                _cache.Put(login, tmp);
             }
             else{
                 res="Already exists";
@@ -163,16 +212,17 @@ public:
 
 private:
     string _http_format;
+    Apache_Cache _cache;
 };
 
 class Receiver_Chooser : public Poco::Net::HTTPRequestHandlerFactory{
 public:
-    Receiver_Chooser(const string &http_format) : _http_format(http_format){
+    Receiver_Chooser(const string &http_format, Apache_Cache &cache) : _http_format(http_format),_cache(cache){
     }
 
     Poco::Net::HTTPRequestHandler *createRequestHandler(const Poco::Net::HTTPServerRequest &request){
         if(Is_Prefix(request.getURI(), "/person")){
-            return new Database_Receiver(_http_format);
+            return new Database_Receiver(_http_format, _cache);
         }
         else{
             return new HTML_Receiver(_http_format);
@@ -181,6 +231,7 @@ public:
 
 private:
     string _http_format;
+    Apache_Cache _cache;
 };
 
 class Server_App : public Poco::Util::ServerApplication{
@@ -209,8 +260,10 @@ protected:
         if(!_helpRequested){
             unsigned short port=(unsigned short)config().getInt("Server_App.port",PORT);
             string http_format(config().getString("Server_App.http_format",Poco::DateTimeFormat::SORTABLE_FORMAT));
+            Apache_Cache cache;
+            cache.Clear_All();
             Poco::Net::ServerSocket server_socket(Poco::Net::SocketAddress("0.0.0.0",port));
-            Poco::Net::HTTPServer server(new Receiver_Chooser(http_format),server_socket,new Poco::Net::HTTPServerParams);
+            Poco::Net::HTTPServer server(new Receiver_Chooser(http_format, cache),server_socket,new Poco::Net::HTTPServerParams);
             cout<<"Started server on "<<IP<<":"<<to_string(port)<<"\n";
             server.start();
             waitForTerminationRequest();
@@ -240,5 +293,5 @@ int main(int argc, char *argv[]){
     cout<<"Enter ip: ";
     cin>>IP;
     Server_App app;
-    return app.run(1, argv);
+    return app.run(1, argv); 
 }
