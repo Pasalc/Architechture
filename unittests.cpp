@@ -14,7 +14,7 @@ bool Test_Find(Person test_data){
     Poco::Net::SocketAddress socket_address(IP, PORT);
     Poco::Net::StreamSocket stream_socket(socket_address);
     Poco::Net::SocketStream socket_stream(stream_socket);
-    socket_stream<<"GET /person?login="<<test_data.login<<"\nHTTP/1.1\n"; 
+    socket_stream<<"GET /person?login="<<test_data.login<<"\nHTTP/1.1\n";
     socket_stream.flush();
     stream_socket.shutdownSend();
     stringstream copy_stream;
@@ -30,7 +30,7 @@ bool Test_Find(Person test_data){
     string last_name=object_json->get("last_name").toString();
     int age;
     object_json->get("age").convert(age);
-    return (login==test_data.login)&&(first_name==test_data.first_name)&&(last_name==test_data.last_name)&&(age==test_data.age);  
+    return (login==test_data.login)&&(first_name==test_data.first_name)&&(last_name==test_data.last_name)&&(age==test_data.age);
 }
 
 TEST(create, u_test){
@@ -58,7 +58,7 @@ TEST(test_add, u_test){
     for(int i=0;i<test_data.size();i++){
         Test_Add(test_data[i]);
     }
-    sleep(8);
+    sleep(16);
     for(int i=0;i<test_data.size();i++){
         if(!Test_Find(test_data[i])){
             cout<<"No user with:\nlogin="<<test_data[i].login<<"\nfirst_name="<<test_data[i].first_name<<"\nlast_name="<<test_data[i].last_name<<"\nage="<<test_data[i].age<<"\n";

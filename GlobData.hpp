@@ -11,6 +11,7 @@
 #include <exception>
 #include <memory>
 #include <thread>
+#include <csignal>
 #include "Poco/Net/HTTPServer.h"
 #include "Poco/Net/HTTPRequestHandler.h"
 #include "Poco/Net/HTTPRequestHandlerFactory.h"
@@ -41,9 +42,9 @@
 #include "Poco/ThreadPool.h"
 #include "Poco/Util/Option.h"
 #include "Poco/Util/HelpFormatter.h"
-#include <ignite/thin/ignite_client.h>
-#include <ignite/thin/ignite_client_configuration.h>
-#include <ignite/thin/cache/cache_peek_mode.h>
+#include <cppkafka/cppkafka.h>
+#include <cppkafka/consumer.h>
+#include <cppkafka/configuration.h>
 
 using namespace std;
 
@@ -70,9 +71,12 @@ const string HOST="127.0.0.1";
 const string LOGIN="stud";
 const string DATABASE="Age";
 const string PASSWORD="stud";
-const string CACHE_IP_PORT=HOST+":10800,"+HOST+":10900";
+const string QUEUE=HOST+":9092";
+const string TOPIC="event_server";
 const int PORT=8080;
-const int DOCKER_PORT=PORT+5; 
+const int DOCKER_PORT=PORT+5;
+int KAFKA_GROUP=0;
+bool KAFKA_WORK=true;
 
 bool Is_Prefix(const string&, const string&);
 
